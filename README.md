@@ -1,1 +1,1 @@
-# resnet-uncertainty-quantification
+# Uncertainty Quantifiaction with Resnets
