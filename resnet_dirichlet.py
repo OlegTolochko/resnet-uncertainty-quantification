@@ -55,7 +55,7 @@ def load_train_data(
 
 
 def train(
-    model: nn.Module, trainloader: torch.utils.data.DataLoader, epochs=100, lr=0.001
+    model: nn.Module, trainloader: torch.utils.data.DataLoader, epochs=50, lr=0.001
 ):
     """
     Args:
@@ -112,14 +112,47 @@ def train_dirichlet(
     pass
 
 
+def quantify_n_model_uncertainty():
+    _, testloader = load_train_data()
+    device = (
+        "mps"
+        if torch.backends.mps.is_available()
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    models = []
+
+    for idx, model in enumerate(models):
+        progress = tqdm.tqdm(
+            testloader,
+            total=len(testloader),
+            desc=f"Eval Model{idx + 1}/{len(models)}",
+            unit="batch",
+        )
+        for step, (inputs, target_label) in enumerate(progress, 1):
+            inputs, target_label = inputs.to(device), target_label.to(device)
+
+            pred_labels = model(inputs)
+            torch.softmax(pred_labels)
+            _, predicted = pred_labels.max(1)
+            total += target_label.size(0)
+            correct += predicted.eq(target_label).sum().item()
+
+            progress.set_postfix(
+                acc=100.0 * correct / total,
+                correct=correct,
+                total=total,
+            )
+
+
 def train_n_models(n_models: int = 10, model_name: str = "resnet_model"):
     for i in range(n_models):
+        model_save_name = model_name
         trainloader, testloader = load_train_data()
         model = resnet18(num_classes=10)
         train(model=model, trainloader=trainloader)
-        model_name += f"_{i + 1}"
-        model_name += ".pth"
-        model_save_path = Path.joinpath(model_path, model_name)
+        model_save_name += f"_{i + 1}"
+        model_save_name += ".pth"
+        model_save_path = Path.joinpath(model_path, model_save_name)
 
         torch.save(model.state_dict(), model_save_path)
         print(f"Saved the model to {model_save_path}.")
@@ -132,4 +165,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    train_n_models()
