@@ -109,7 +109,8 @@ def train(
 def train_dirichlet(
     model: nn.Module, trainloader: torch.utils.data.DataLoader, lr=0.001
 ):
-    pass
+    model = resnet18()
+    model.fc = nn.ReLU(nn.Linear(model.fc.in_features, 10))
 
 
 def quantify_n_model_uncertainty():
@@ -119,7 +120,7 @@ def quantify_n_model_uncertainty():
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    
+
     models = []
     for single_model_path in Path.iterdir(model_path):
         model = resnet18(num_classes=10)
@@ -140,8 +141,8 @@ def quantify_n_model_uncertainty():
         softmax_scores[idx] = []
         for step, (inputs, target_label) in enumerate(progress, 1):
             inputs, target_label = inputs.to(device), target_label.to(device)
-
-            pred_labels = model(inputs)
+            with torch.no_grad():
+                pred_labels = model(inputs)
             pred_label_scores = torch.softmax(pred_labels, -1)
             softmax_scores[idx].append(pred_label_scores)
             _, predicted = pred_labels.max(1)
@@ -153,6 +154,37 @@ def quantify_n_model_uncertainty():
                 correct=correct,
                 total=total,
             )
+            torch.cuda.empty_cache()
+
+        model.to("cpu")
+        del model
+
+    stacked = [torch.cat(softmax_scores[idx], dim=0) for idx in sorted(softmax_scores)]
+    scores = torch.stack(stacked, dim=0)
+    scores = scores.transpose(0, 1)
+    print(scores.shape)
+
+    concentration_params = get_dirichlet_concentration_params(prob_vectors=scores)
+    distribution = torch.distributions.dirichlet.Dirichlet(concentration_params[0])
+    print(f"Mean: {distribution.mean}")
+    print(f"Variance: {distribution.entropy}")
+
+
+def get_dirichlet_concentration_params(prob_vectors: torch.Tensor):
+    """
+    Args:
+        prob_vectors (Probability Vectors): Need to be of shape (Batch, Num Models, Num Classes)
+    """
+    sample_means = torch.mean(prob_vectors, dim=1)
+    sample_vars = torch.mean(prob_vectors, dim=1)
+
+    alpha0s = (sample_means * (1 - sample_means)) / (sample_vars)
+    alpha0_means = torch.mean(alpha0s, dim=-1)
+
+    print(sample_means.shape)
+    print(alpha0_means.shape)
+    concentration_params = sample_means * alpha0_means[:, None]
+    return concentration_params
 
 
 def train_n_models(n_models: int = 10, model_name: str = "resnet_model"):
