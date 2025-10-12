@@ -119,20 +119,31 @@ def quantify_n_model_uncertainty():
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
+    
     models = []
+    for single_model_path in Path.iterdir(model_path):
+        model = resnet18(num_classes=10)
+        model.load_state_dict(torch.load(single_model_path, weights_only=True))
+        model.to(device)
+        models.append(model)
 
+    total = 0
+    correct = 0
+    softmax_scores = {}
     for idx, model in enumerate(models):
         progress = tqdm.tqdm(
             testloader,
             total=len(testloader),
-            desc=f"Eval Model{idx + 1}/{len(models)}",
+            desc=f"Eval Model: {idx + 1}/{len(models)}",
             unit="batch",
         )
+        softmax_scores[idx] = []
         for step, (inputs, target_label) in enumerate(progress, 1):
             inputs, target_label = inputs.to(device), target_label.to(device)
 
             pred_labels = model(inputs)
-            torch.softmax(pred_labels)
+            pred_label_scores = torch.softmax(pred_labels, -1)
+            softmax_scores[idx].append(pred_label_scores)
             _, predicted = pred_labels.max(1)
             total += target_label.size(0)
             correct += predicted.eq(target_label).sum().item()
@@ -165,4 +176,4 @@ def main():
 
 
 if __name__ == "__main__":
-    train_n_models()
+    quantify_n_model_uncertainty()
