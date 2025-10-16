@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.functional as F
+from torch.special import digamma
 from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.models import resnet18, resnet50, vgg19
 from torchvision.transforms import transforms
@@ -106,11 +107,16 @@ def train(
     return model
 
 
-def train_dirichlet(
-    model: nn.Module, trainloader: torch.utils.data.DataLoader, lr=0.001
-):
+def train_dirichlet():
     model = resnet18()
-    model.fc = nn.ReLU(nn.Linear(model.fc.in_features, 10))
+    model_save_name = "model_dirichlet.pth"
+    trainloader, testloader = load_train_data() 
+    model.fc = nn.Sequential(nn.Linear(model.fc.in_features, 10), nn.ReLU())
+
+    model = train(model=model, trainloader=trainloader)
+    model_save_path = Path.joinpath(model_path, model_save_name)
+    torch.save(model.state_dict(), model_save_path)
+    print(f"Saved the model to {model_save_path}.")
 
 
 def quantify_n_model_uncertainty():
@@ -161,13 +167,28 @@ def quantify_n_model_uncertainty():
 
     stacked = [torch.cat(softmax_scores[idx], dim=0) for idx in sorted(softmax_scores)]
     scores = torch.stack(stacked, dim=0)
-    scores = scores.transpose(0, 1)
-    print(scores.shape)
-
+    scores = scores.transpose(0, 1) # [Batch, n_models, n_classes]
+ 
     concentration_params = get_dirichlet_concentration_params(prob_vectors=scores)
     distribution = torch.distributions.dirichlet.Dirichlet(concentration_params[0])
     print(f"Mean: {distribution.mean}")
     print(f"Variance: {distribution.entropy}")
+
+    alpha = concentration_params[0]
+    alpha0 = alpha.sum(dim=-1, keepdim=True)
+
+    mean_p = alpha / alpha0
+    pred_entropy = -(mean_p * torch.log(mean_p + 1e-12)).sum(dim=-1)
+
+    expected_entropy = (
+        digamma(alpha0 + 1)
+        - (1 / alpha0.squeeze(-1)) * (alpha * digamma(alpha + 1)).sum(dim=-1)
+    )
+
+    epistemic = pred_entropy - expected_entropy
+    print(f"epistemic: {epistemic}")
+    print(f"pred entropy: {pred_entropy}")
+    print(f"expect. entropy: {expected_entropy}")
 
 
 def get_dirichlet_concentration_params(prob_vectors: torch.Tensor):
@@ -181,8 +202,6 @@ def get_dirichlet_concentration_params(prob_vectors: torch.Tensor):
     alpha0s = (sample_means * (1 - sample_means)) / (sample_vars)
     alpha0_means = torch.mean(alpha0s, dim=-1)
 
-    print(sample_means.shape)
-    print(alpha0_means.shape)
     concentration_params = sample_means * alpha0_means[:, None]
     return concentration_params
 
