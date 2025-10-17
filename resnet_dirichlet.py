@@ -11,6 +11,7 @@ from torchvision.models import resnet18, resnet50, vgg19
 from torchvision.transforms import transforms
 import tqdm
 from sklearn.metrics import roc_auc_score
+import numpy as np
 
 
 data_path = Path("./data")
@@ -19,6 +20,38 @@ data_path.mkdir(exist_ok=True)
 model_path = Path("./models")
 model_path.mkdir(exist_ok=True)
 
+
+def load_cifar10c(corruption_type = "gaussian_noise", severity = 1, batch_size=128):
+    cifar10c_path = Path('data/CIFAR-10-C')
+    
+    corruption_file = cifar10c_path / f'{corruption_type}.npy'
+    labels_file = cifar10c_path / 'labels.npy'
+    
+    images = np.load(corruption_file)
+    labels = np.load(labels_file)
+    
+    start_idx = (severity - 1) * 10000
+    end_idx = severity * 10000
+    images = images[start_idx:end_idx]
+    labels = labels[start_idx:end_idx]
+    
+    images = torch.from_numpy(images).float() / 255.0
+    images = images.permute(0, 3, 1, 2)
+    
+    normalize = transforms.Normalize(
+        mean=[0.4914, 0.4822, 0.4465],
+        std=[0.2023, 0.1994, 0.2010]
+    )
+    images = torch.stack([normalize(img) for img in images])
+    labels = torch.from_numpy(labels).long()
+    
+    dataset = torch.utils.data.TensorDataset(images, labels)
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=False
+    )
+    
+    return dataloader
+    
 
 def load_train_data(
     dataset: torch.utils.data.Dataset = CIFAR10, batch_size: int = 128
@@ -118,6 +151,49 @@ def train_dirichlet():
     model_save_path = Path.joinpath(model_path, model_save_name)
     torch.save(model.state_dict(), model_save_path)
     print(f"Saved the model to {model_save_path}.")
+
+
+def get_uncertainties(models, device, dataloader, dataset_name):
+    softmax_scores = {}
+    all_targets = []
+    
+    for idx, model in enumerate(models):
+        progress = tqdm.tqdm(
+            dataloader,
+            total=len(dataloader),
+            desc=f"Eval {dataset_name} - Model {idx + 1}/{len(models)}",
+            unit="batch",
+        )
+        softmax_scores[idx] = []
+        for step, (inputs, target_label) in enumerate(progress, 1):
+            inputs, target_label = inputs.to(device), target_label.to(device)
+            with torch.no_grad():
+                pred_labels = model(inputs)
+            pred_label_scores = torch.softmax(pred_labels, -1)
+            softmax_scores[idx].append(pred_label_scores)
+            
+            if idx == 0:
+                all_targets.extend(target_label.cpu().tolist())
+            
+            torch.cuda.empty_cache()
+
+        model.to("cpu")
+        torch.cuda.empty_cache()
+    
+    stacked = [torch.cat(softmax_scores[idx], dim=0) for idx in sorted(softmax_scores)]
+    scores = torch.stack(stacked, dim=0)
+    scores = scores.transpose(0, 1)
+    
+    mean_pred = scores.mean(dim=1)
+    ensemble_predictions = mean_pred.argmax(dim=1).cpu().numpy()
+    
+    uncertainties = compute_uncertainties(scores)
+    all_targets = torch.tensor(all_targets).numpy()
+    
+    for model in models:
+        model.to(device)
+    
+    return uncertainties, ensemble_predictions, all_targets
 
 
 def quantify_n_model_uncertainty():
