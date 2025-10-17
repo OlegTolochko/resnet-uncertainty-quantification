@@ -168,11 +168,20 @@ def quantify_n_model_uncertainty():
     stacked = [torch.cat(softmax_scores[idx], dim=0) for idx in sorted(softmax_scores)]
     scores = torch.stack(stacked, dim=0)
     scores = scores.transpose(0, 1) # [Batch, n_models, n_classes]
+
+    uncertainties = compute_uncertainties(scores)
+
+    for i in range(10):
+        print(f"Sample {i}:")
+        print(f"  Predicted class: {uncertainties['mean_pred'][i].argmax()}")
+        print(f"  Aleatoric: {uncertainties['aleatoric'][i]:.4f}")
+        print(f"  Epistemic: {uncertainties['epistemic'][i]:.4f}")
+        print(f"  Total: {uncertainties['total'][i]:.4f}")
  
     concentration_params = get_dirichlet_concentration_params(prob_vectors=scores)
     distribution = torch.distributions.dirichlet.Dirichlet(concentration_params[0])
     print(f"Mean: {distribution.mean}")
-    print(f"Variance: {distribution.entropy}")
+    print(f"Variance: {distribution.entropy()}")
 
     alpha = concentration_params[0]
     alpha0 = alpha.sum(dim=-1, keepdim=True)
@@ -180,15 +189,33 @@ def quantify_n_model_uncertainty():
     mean_p = alpha / alpha0
     pred_entropy = -(mean_p * torch.log(mean_p + 1e-12)).sum(dim=-1)
 
-    expected_entropy = (
+    aleatoric_unc = (
         digamma(alpha0 + 1)
         - (1 / alpha0.squeeze(-1)) * (alpha * digamma(alpha + 1)).sum(dim=-1)
     )
 
-    epistemic = pred_entropy - expected_entropy
+    epistemic = pred_entropy - aleatoric_unc
     print(f"epistemic: {epistemic}")
     print(f"pred entropy: {pred_entropy}")
-    print(f"expect. entropy: {expected_entropy}")
+    print(f"alaetoric: {aleatoric_unc}")
+
+def compute_uncertainties(scores):
+    mean_pred = scores.mean(dim=1)
+    
+    individual_entropies = -(scores * torch.log(scores + 1e-10)).sum(dim=-1)
+    aleatoric = individual_entropies.mean(dim=1)
+    
+    mean_entropy = -(mean_pred * torch.log(mean_pred + 1e-10)).sum(dim=-1)
+    epistemic = mean_entropy - aleatoric
+    
+    return {
+        'mean_pred': mean_pred,
+        'aleatoric': aleatoric,
+        'epistemic': epistemic,
+        'total': mean_entropy
+    }
+
+
 
 
 def get_dirichlet_concentration_params(prob_vectors: torch.Tensor):
