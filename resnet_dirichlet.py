@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.functional as F
-from torch.special import digamma
 from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.models import resnet18, resnet50, vgg19
 from torchvision.transforms import transforms
@@ -21,7 +20,7 @@ model_path = Path("./models")
 model_path.mkdir(exist_ok=True)
 
 
-def load_cifar10c(corruption_type="gaussian_noise", severity=1, batch_size=128):
+def load_cifar10c(corruption_type="jpeg_compression", severity=1, batch_size=128):
     cifar10c_path = Path("data/CIFAR-10-C")
 
     corruption_file = cifar10c_path / f"{corruption_type}.npy"
@@ -219,13 +218,7 @@ def quantify_n_model_uncertainty():
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-
-    models = []
-    for single_model_path in Path.iterdir(model_path):
-        model = resnet18(num_classes=10)
-        model.load_state_dict(torch.load(single_model_path, weights_only=True))
-        model.to(device)
-        models.append(model)
+    models = load_all_models(device)
 
     uncertainties, ensemble_predictions, all_targets = get_uncertainties(
         models, device=device, dataloader=testloader, dataset_name="CIFAR10"
@@ -245,6 +238,75 @@ def quantify_n_model_uncertainty():
     auc_score = roc_auc_score(incorrect_predictions, total_uncertainty.cpu().numpy())
 
     print(f"\nAUC Score (uncertainty vs misclassification): {auc_score:.4f}")
+
+
+def load_all_models(device):
+    models = []
+    for single_model_path in Path.iterdir(model_path):
+        model = resnet18(num_classes=10)
+        model.load_state_dict(torch.load(single_model_path, weights_only=True))
+        model.to(device)
+        models.append(model)
+    return models
+
+
+def ood_detection():
+    _, testloader_cifar10 = load_train_data()
+    testloader_cifar10c = load_cifar10c(corruption_type="gaussian_noise", severity=5)
+    device = (
+        "mps"
+        if torch.backends.mps.is_available()
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    models = load_all_models(device)
+
+    uncertainties_c10, ensemble_predictions_c10, all_targets_c10 = get_uncertainties(
+        models, device=device, dataloader=testloader_cifar10, dataset_name="CIFAR10"
+    )
+
+    uncertainties_c10c, ensemble_predictions_c10c, all_targets_c10c = get_uncertainties(
+        models, device=device, dataloader=testloader_cifar10c, dataset_name="CIFAR10c"
+    )
+
+    n_id = len(uncertainties_c10["epistemic"])
+    n_ood = len(uncertainties_c10c["epistemic"])
+
+    ood_labels = np.concatenate([np.zeros(n_id), np.ones(n_ood)])
+
+    uncertainty_types = {
+        "Total": torch.cat(
+            [uncertainties_c10["total"], uncertainties_c10c["total"]], dim=0
+        )
+        .cpu()
+        .numpy(),
+        "Epistemic": torch.cat(
+            [uncertainties_c10["epistemic"], uncertainties_c10c["epistemic"]], dim=0
+        )
+        .cpu()
+        .numpy(),
+        "Aleatoric": torch.cat(
+            [uncertainties_c10["aleatoric"], uncertainties_c10c["aleatoric"]], dim=0
+        )
+        .cpu()
+        .numpy(),
+    }
+
+    correct_predictions_c10 = np.mean(ensemble_predictions_c10 == all_targets_c10)
+    correct_predictions_c10c = np.mean(ensemble_predictions_c10c == all_targets_c10c)
+
+    print(f"Correct prediction percent for CIFAR10: {correct_predictions_c10}")
+    print(f"Correct prediction percent for CIFAR10c: {correct_predictions_c10c}")
+
+    print("OOD Detection Results:")
+    print(f"ID samples: {n_id}, OOD samples: {n_ood}")
+
+    for name, uncertainty in uncertainty_types.items():
+        auroc = roc_auc_score(ood_labels, uncertainty)
+        print(f"{name} Uncertainty AUROC: {auroc:.4f}")
+
+        id_mean = uncertainty[:n_id].mean()
+        ood_mean = uncertainty[n_id:].mean()
+        print(f"  ID mean: {id_mean:.4f}, OOD mean: {ood_mean:.4f}")
 
 
 def train_n_models(n_models: int = 10, model_name: str = "resnet_model"):
@@ -268,4 +330,4 @@ def main():
 
 
 if __name__ == "__main__":
-    quantify_n_model_uncertainty()
+    ood_detection()
