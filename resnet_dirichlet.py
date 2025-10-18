@@ -21,37 +21,36 @@ model_path = Path("./models")
 model_path.mkdir(exist_ok=True)
 
 
-def load_cifar10c(corruption_type = "gaussian_noise", severity = 1, batch_size=128):
-    cifar10c_path = Path('data/CIFAR-10-C')
-    
-    corruption_file = cifar10c_path / f'{corruption_type}.npy'
-    labels_file = cifar10c_path / 'labels.npy'
-    
+def load_cifar10c(corruption_type="gaussian_noise", severity=1, batch_size=128):
+    cifar10c_path = Path("data/CIFAR-10-C")
+
+    corruption_file = cifar10c_path / f"{corruption_type}.npy"
+    labels_file = cifar10c_path / "labels.npy"
+
     images = np.load(corruption_file)
     labels = np.load(labels_file)
-    
+
     start_idx = (severity - 1) * 10000
     end_idx = severity * 10000
     images = images[start_idx:end_idx]
     labels = labels[start_idx:end_idx]
-    
+
     images = torch.from_numpy(images).float() / 255.0
     images = images.permute(0, 3, 1, 2)
-    
+
     normalize = transforms.Normalize(
-        mean=[0.4914, 0.4822, 0.4465],
-        std=[0.2023, 0.1994, 0.2010]
+        mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010]
     )
     images = torch.stack([normalize(img) for img in images])
     labels = torch.from_numpy(labels).long()
-    
+
     dataset = torch.utils.data.TensorDataset(images, labels)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=False
     )
-    
+
     return dataloader
-    
+
 
 def load_train_data(
     dataset: torch.utils.data.Dataset = CIFAR10, batch_size: int = 128
@@ -144,7 +143,7 @@ def train(
 def train_dirichlet():
     model = resnet18()
     model_save_name = "model_dirichlet.pth"
-    trainloader, testloader = load_train_data() 
+    trainloader, testloader = load_train_data()
     model.fc = nn.Sequential(nn.Linear(model.fc.in_features, 10), nn.ReLU())
 
     model = train(model=model, trainloader=trainloader)
@@ -156,7 +155,7 @@ def train_dirichlet():
 def get_uncertainties(models, device, dataloader, dataset_name):
     softmax_scores = {}
     all_targets = []
-    
+
     for idx, model in enumerate(models):
         progress = tqdm.tqdm(
             dataloader,
@@ -171,29 +170,46 @@ def get_uncertainties(models, device, dataloader, dataset_name):
                 pred_labels = model(inputs)
             pred_label_scores = torch.softmax(pred_labels, -1)
             softmax_scores[idx].append(pred_label_scores)
-            
+
             if idx == 0:
                 all_targets.extend(target_label.cpu().tolist())
-            
+
             torch.cuda.empty_cache()
 
         model.to("cpu")
         torch.cuda.empty_cache()
-    
+
     stacked = [torch.cat(softmax_scores[idx], dim=0) for idx in sorted(softmax_scores)]
     scores = torch.stack(stacked, dim=0)
     scores = scores.transpose(0, 1)
-    
+
     mean_pred = scores.mean(dim=1)
     ensemble_predictions = mean_pred.argmax(dim=1).cpu().numpy()
-    
+
     uncertainties = compute_uncertainties(scores)
     all_targets = torch.tensor(all_targets).numpy()
-    
+
     for model in models:
         model.to(device)
-    
+
     return uncertainties, ensemble_predictions, all_targets
+
+
+def compute_uncertainties(scores):
+    mean_pred = scores.mean(dim=1)
+
+    shan_entropies = -(scores * torch.log(scores + 1e-10)).sum(dim=-1)
+    aleatoric = shan_entropies.mean(dim=1)
+
+    mean_entropy = -(mean_pred * torch.log(mean_pred + 1e-10)).sum(dim=-1)
+    epistemic = mean_entropy - aleatoric
+
+    return {
+        "mean_pred": mean_pred,
+        "aleatoric": aleatoric,
+        "epistemic": epistemic,
+        "total": mean_entropy,
+    }
 
 
 def quantify_n_model_uncertainty():
@@ -211,51 +227,11 @@ def quantify_n_model_uncertainty():
         model.to(device)
         models.append(model)
 
-    total = 0
-    correct = 0
-    softmax_scores = {}
-    all_targets = []
-    for idx, model in enumerate(models):
-        progress = tqdm.tqdm(
-            testloader,
-            total=len(testloader),
-            desc=f"Eval Model: {idx + 1}/{len(models)}",
-            unit="batch",
-        )
-        softmax_scores[idx] = []
-        for step, (inputs, target_label) in enumerate(progress, 1):
-            inputs, target_label = inputs.to(device), target_label.to(device)
-            with torch.no_grad():
-                pred_labels = model(inputs)
-            pred_label_scores = torch.softmax(pred_labels, -1)
-            softmax_scores[idx].append(pred_label_scores)
-            _, predicted = pred_labels.max(1)
-            total += target_label.size(0)
-            correct += predicted.eq(target_label).sum().item()
-            if idx == 0:
-                all_targets.extend(target_label.cpu().tolist())
-            
-            progress.set_postfix(
-                acc=100.0 * correct / total,
-                correct=correct,
-                total=total,
-            )
-            torch.cuda.empty_cache()
+    uncertainties, ensemble_predictions, all_targets = get_uncertainties(
+        models, device=device, dataloader=testloader, dataset_name="CIFAR10"
+    )
 
-        model.to("cpu")
-        del model
-
-    stacked = [torch.cat(softmax_scores[idx], dim=0) for idx in sorted(softmax_scores)]
-    scores = torch.stack(stacked, dim=0)
-    scores = scores.transpose(0, 1) # [Batch, n_models, n_classes]
-    mean_pred = scores.mean(dim=1)
-    ensemble_predictions = mean_pred.argmax(dim=1).cpu().numpy()
-
-    uncertainties = compute_uncertainties(scores)
-    all_targets = torch.tensor(all_targets).numpy()
-    
     incorrect_predictions = (ensemble_predictions != all_targets).astype(int)
- 
 
     for i in range(10):
         print(f"Sample {i}:")
@@ -264,28 +240,11 @@ def quantify_n_model_uncertainty():
         print(f"Epistemic: {uncertainties['epistemic'][i]:.4f}")
         print(f"Total: {uncertainties['total'][i]:.4f}")
 
-    total_uncertainty = uncertainties['total']
+    total_uncertainty = uncertainties["total"]
 
     auc_score = roc_auc_score(incorrect_predictions, total_uncertainty.cpu().numpy())
-    
+
     print(f"\nAUC Score (uncertainty vs misclassification): {auc_score:.4f}")
-
-
-def compute_uncertainties(scores):
-    mean_pred = scores.mean(dim=1)
-    
-    shan_entropies = -(scores * torch.log(scores + 1e-10)).sum(dim=-1)
-    aleatoric = shan_entropies.mean(dim=1)
-    
-    mean_entropy = -(mean_pred * torch.log(mean_pred + 1e-10)).sum(dim=-1)
-    epistemic = mean_entropy - aleatoric
-    
-    return {
-        'mean_pred': mean_pred,
-        'aleatoric': aleatoric,
-        'epistemic': epistemic,
-        'total': mean_entropy
-    }
 
 
 def train_n_models(n_models: int = 10, model_name: str = "resnet_model"):
