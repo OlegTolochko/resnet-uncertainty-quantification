@@ -10,7 +10,9 @@ from torchvision.models import resnet18
 import tqdm
 from sklearn.metrics import roc_auc_score
 import numpy as np
+from cyclopts import App
 
+app = App()
 
 model_path = Path("./models")
 model_path.mkdir(exist_ok=True)
@@ -33,6 +35,7 @@ class ResNet18_MCDO(nn.Module):
         return self.resnet(x)
 
 
+@app.command()
 def train_mcdo(dropout_p=0.3):
     model = ResNet18_MCDO(dropout_p=dropout_p)
     model_save_name = f"model_mcdo_{int(dropout_p * 100)}dp.pth"
@@ -44,6 +47,7 @@ def train_mcdo(dropout_p=0.3):
     print(f"Saved the model to {model_save_path}.")
 
 
+@app.command()
 def get_uncertainties_mcdo(model, n_iter, device, dataloader, dataset_name):
     softmax_scores = {}
     all_targets = []
@@ -83,6 +87,7 @@ def get_uncertainties_mcdo(model, n_iter, device, dataloader, dataset_name):
     return uncertainties, ensemble_predictions, all_targets
 
 
+@app.command()
 def quantify_mcdo_model_uncertainty(model_name: str = "model_mcdo_30dp.pth"):
     _, testloader = load_train_data()
     device = (
@@ -116,3 +121,7 @@ def quantify_mcdo_model_uncertainty(model_name: str = "model_mcdo_30dp.pth"):
     auc_score = roc_auc_score(incorrect_predictions, total_uncertainty.cpu().numpy())
 
     print(f"\nAUC Score (uncertainty vs misclassification): {auc_score:.4f}")
+
+
+if __name__ == "__main__":
+    app()

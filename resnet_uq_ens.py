@@ -9,11 +9,15 @@ from torchvision.models import resnet18, resnet50, vgg19
 import tqdm
 from sklearn.metrics import roc_auc_score
 import numpy as np
+from cyclopts import App
+
+app = App()
 
 model_path = Path("./models")
 model_path.mkdir(exist_ok=True)
 
 
+@app.command()
 def get_uncertainties(models, device, dataloader, dataset_name):
     softmax_scores = {}
     all_targets = []
@@ -57,6 +61,7 @@ def get_uncertainties(models, device, dataloader, dataset_name):
     return uncertainties, ensemble_predictions, all_targets
 
 
+@app.command()
 def quantify_n_model_uncertainty():
     _, testloader = load_train_data()
     device = (
@@ -96,7 +101,8 @@ def load_all_models_ens(device):
     return models
 
 
-def ood_detection():
+@app.command()
+def ood_detection_ens():
     _, testloader_cifar10 = load_train_data()
     testloader_cifar10c = load_cifar10c(corruption_type="gaussian_noise", severity=5)
     device = (
@@ -155,7 +161,8 @@ def ood_detection():
         print(f"  ID mean: {id_mean:.4f}, OOD mean: {ood_mean:.4f}")
 
 
-def train_n_models(n_models: int = 10, model_name: str = "resnet_model"):
+@app.command()
+def train_n_models_ens(n_models: int = 10, model_name: str = "resnet_model"):
     for i in range(n_models):
         model_save_name = model_name
         trainloader, testloader = load_train_data()
@@ -170,4 +177,4 @@ def train_n_models(n_models: int = 10, model_name: str = "resnet_model"):
 
 
 if __name__ == "__main__":
-    quantify_n_model_uncertainty()
+    app()

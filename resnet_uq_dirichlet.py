@@ -9,6 +9,9 @@ from torchvision.models import resnet18
 import tqdm
 from sklearn.metrics import roc_auc_score
 import numpy as np
+from cyclopts import App
+
+app = App()
 
 model_path = Path("./models")
 model_path.mkdir(exist_ok=True)
@@ -17,6 +20,7 @@ dirichlet_model_path = Path.joinpath(model_path, "dirichlet")
 dirichlet_model_path.mkdir(exist_ok=True)
 
 
+@app.command()
 def train_dirichlet():
     model = resnet18()
     model_save_name = "model_dirichlet.pth"
@@ -27,3 +31,7 @@ def train_dirichlet():
     model_save_path = Path.joinpath(dirichlet_model_path, model_save_name)
     torch.save(model.state_dict(), model_save_path)
     print(f"Saved the model to {model_save_path}.")
+
+
+if __name__ == "__main__":
+    app()
