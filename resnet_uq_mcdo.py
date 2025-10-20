@@ -1,6 +1,6 @@
 from train import train
 from data_manager import load_train_data, load_cifar10c
-from uq_helper import compute_uncertainties
+from uq_helper import compute_uncertainties, ood_detection
 
 from pathlib import Path
 
@@ -24,7 +24,7 @@ mcdo_model_path.mkdir(exist_ok=True)
 class ResNet18_MCDO(nn.Module):
     def __init__(self, num_classes=10, dropout_p=0.3):
         super(ResNet18_MCDO, self).__init__()
-        self.resnet = resnet18(pretrained=False)
+        self.resnet = resnet18()
 
         num_features = self.resnet.fc.in_features
         self.resnet.fc = nn.Sequential(
@@ -33,6 +33,16 @@ class ResNet18_MCDO(nn.Module):
 
     def forward(self, x):
         return self.resnet(x)
+
+
+def load_mcdo_model(model_name, device):
+    model = ResNet18_MCDO()
+    model.load_state_dict(
+        torch.load(Path.joinpath(mcdo_model_path, model_name), weights_only=True)
+    )
+    model.to(device)
+    model.train()
+    return model
 
 
 @app.command()
@@ -95,13 +105,7 @@ def quantify_mcdo_model_uncertainty(model_name: str = "model_mcdo_30dp.pth"):
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    model = resnet18()
-    model.fc = nn.Sequential(nn.Dropout(0.3), nn.Linear(model.fc.in_features, 10))
-    model.load_state_dict(
-        torch.load(Path.joinpath(mcdo_model_path, model_name), weights_only=True)
-    )
-    model.to(device)
-    model.train()
+    model = load_mcdo_model(model_name, device)
 
     uncertainties, ensemble_predictions, all_targets = get_uncertainties_mcdo(
         model, n_iter=10, device=device, dataloader=testloader, dataset_name="CIFAR10"
@@ -121,6 +125,46 @@ def quantify_mcdo_model_uncertainty(model_name: str = "model_mcdo_30dp.pth"):
     auc_score = roc_auc_score(incorrect_predictions, total_uncertainty.cpu().numpy())
 
     print(f"\nAUC Score (uncertainty vs misclassification): {auc_score:.4f}")
+
+
+@app.command()
+def ood_detection_mcdo(model_name: str = "model_mcdo_30dp.pth"):
+    _, testloader_cifar10 = load_train_data()
+    testloader_cifar10c = load_cifar10c(corruption_type="gaussian_noise", severity=5)
+    device = (
+        "mps"
+        if torch.backends.mps.is_available()
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    model = load_mcdo_model(model_name, device)
+
+    uncertainties_c10, ensemble_predictions_c10, all_targets_c10 = (
+        get_uncertainties_mcdo(
+            model,
+            n_iter=10,
+            device=device,
+            dataloader=testloader_cifar10,
+            dataset_name="CIFAR10",
+        )
+    )
+
+    uncertainties_c10c, ensemble_predictions_c10c, all_targets_c10c = (
+        get_uncertainties_mcdo(
+            model,
+            n_iter=10,
+            device=device,
+            dataloader=testloader_cifar10c,
+            dataset_name="CIFAR10c",
+        )
+    )
+    ood_detection(
+        uncertainties_c10,
+        uncertainties_c10c,
+        ensemble_predictions_c10,
+        ensemble_predictions_c10c,
+        all_targets_c10,
+        all_targets_c10c,
+    )
 
 
 if __name__ == "__main__":

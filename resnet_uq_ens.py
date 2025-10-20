@@ -1,6 +1,6 @@
 from data_manager import load_train_data, load_cifar10c
 from train import train
-from uq_helper import compute_uncertainties
+from uq_helper import compute_uncertainties, ood_detection
 
 from pathlib import Path
 
@@ -119,46 +119,14 @@ def ood_detection_ens():
     uncertainties_c10c, ensemble_predictions_c10c, all_targets_c10c = get_uncertainties(
         models, device=device, dataloader=testloader_cifar10c, dataset_name="CIFAR10c"
     )
-
-    n_id = len(uncertainties_c10["epistemic"])
-    n_ood = len(uncertainties_c10c["epistemic"])
-
-    ood_labels = np.concatenate([np.zeros(n_id), np.ones(n_ood)])
-
-    uncertainty_types = {
-        "Total": torch.cat(
-            [uncertainties_c10["total"], uncertainties_c10c["total"]], dim=0
-        )
-        .cpu()
-        .numpy(),
-        "Epistemic": torch.cat(
-            [uncertainties_c10["epistemic"], uncertainties_c10c["epistemic"]], dim=0
-        )
-        .cpu()
-        .numpy(),
-        "Aleatoric": torch.cat(
-            [uncertainties_c10["aleatoric"], uncertainties_c10c["aleatoric"]], dim=0
-        )
-        .cpu()
-        .numpy(),
-    }
-
-    correct_predictions_c10 = np.mean(ensemble_predictions_c10 == all_targets_c10)
-    correct_predictions_c10c = np.mean(ensemble_predictions_c10c == all_targets_c10c)
-
-    print(f"Correct prediction percent for CIFAR10: {correct_predictions_c10}")
-    print(f"Correct prediction percent for CIFAR10c: {correct_predictions_c10c}")
-
-    print("OOD Detection Results:")
-    print(f"ID samples: {n_id}, OOD samples: {n_ood}")
-
-    for name, uncertainty in uncertainty_types.items():
-        auroc = roc_auc_score(ood_labels, uncertainty)
-        print(f"{name} Uncertainty AUROC: {auroc:.4f}")
-
-        id_mean = uncertainty[:n_id].mean()
-        ood_mean = uncertainty[n_id:].mean()
-        print(f"  ID mean: {id_mean:.4f}, OOD mean: {ood_mean:.4f}")
+    ood_detection(
+        uncertainties_c10,
+        uncertainties_c10c,
+        ensemble_predictions_c10,
+        ensemble_predictions_c10c,
+        all_targets_c10,
+        all_targets_c10c,
+    )
 
 
 @app.command()

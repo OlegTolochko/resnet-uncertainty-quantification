@@ -19,6 +19,8 @@ model_path.mkdir(exist_ok=True)
 dirichlet_model_path = Path.joinpath(model_path, "dirichlet")
 dirichlet_model_path.mkdir(exist_ok=True)
 
+"""Custom training loop required for dirichlet distribution outputting models, due to custom Loss"""
+
 
 @app.command()
 def train_dirichlet():
