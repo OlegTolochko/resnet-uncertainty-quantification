@@ -1,6 +1,6 @@
 from data_manager import load_train_data, load_cifar10c
 from train import train
-from uq_helper import compute_uncertainties, ood_detection
+from utilities import compute_uncertainties, ood_detection
 
 from pathlib import Path
 

@@ -1,31 +1,27 @@
 from train import train
 from data_manager import load_train_data, load_cifar10c
-from uq_helper import compute_uncertainties, ood_detection
+from utilities import compute_uncertainties, ood_detection, BASE_MODEL_MAP, ModelType
 
 from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18
 import tqdm
 from sklearn.metrics import roc_auc_score
-import numpy as np
 from cyclopts import App
 
 app = App()
 
-model_path = Path("./models")
-model_path.mkdir(exist_ok=True)
-
-mcdo_model_path = Path.joinpath(model_path, "mcdo")
-mcdo_model_path.mkdir(exist_ok=True)
+MCDO_MODEL_PATH = Path("./models/mcdo")
+MCDO_MODEL_PATH.mkdir(parents=True, exist_ok=True)
 
 
-class ResNet18_MCDO(nn.Module):
-    def __init__(self, num_classes=10, dropout_p=0.3):
-        super(ResNet18_MCDO, self).__init__()
-        self.resnet = resnet18()
+class ResNetMCDO(nn.Module):
+    """ResNet with MC Dropout for uncertainty quantification."""
 
+    def __init__(self, base_model, num_classes=10, dropout_p=0.3):
+        super().__init__()
+        self.resnet = base_model()
         num_features = self.resnet.fc.in_features
         self.resnet.fc = nn.Sequential(
             nn.Dropout(p=dropout_p), nn.Linear(num_features, num_classes)
@@ -35,30 +31,56 @@ class ResNet18_MCDO(nn.Module):
         return self.resnet(x)
 
 
-def load_mcdo_model(model_name, device):
-    model = ResNet18_MCDO()
-    model.load_state_dict(
-        torch.load(Path.joinpath(mcdo_model_path, model_name), weights_only=True)
-    )
+def create_mcdo_model(
+    model_type: str, num_classes: int = 10, dropout_p: float = 0.3
+) -> ResNetMCDO:
+    """Factory for ResNetMCDO"""
+    if model_type not in BASE_MODEL_MAP:
+        raise ValueError(
+            f"Unknown model_type '{model_type}'. Supported: {list(BASE_MODEL_MAP.keys())}"
+        )
+    base_model_fn = BASE_MODEL_MAP[model_type]
+    return ResNetMCDO(base_model_fn, num_classes=num_classes, dropout_p=dropout_p)
+
+
+def load_mcdo_model(
+    model_type: str,
+    model_name: str,
+    device: torch.device,
+    num_classes: int = 10,
+    dropout_p: float = 0.3,
+) -> ResNetMCDO:
+    model = create_mcdo_model(model_type, num_classes=num_classes, dropout_p=dropout_p)
+    model_path = MCDO_MODEL_PATH / model_name
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model not found: {model_path}")
+    model.load_state_dict(torch.load(model_path, weights_only=True))
     model.to(device)
-    model.train()
+    model.train()  # Keeps dropout active
     return model
 
 
 @app.command()
-def train_mcdo(dropout_p=0.3):
-    model = ResNet18_MCDO(dropout_p=dropout_p)
-    model_save_name = f"model_mcdo_{int(dropout_p * 100)}dp.pth"
-    trainloader, testloader = load_train_data()
+def train_mcdo(
+    model_type: ModelType = "resnet18",
+    dropout_p: float = 0.3,
+    save_name: str = None,
+    n_epochs: int = 100,
+):
+    """Train a ResNet with MC Dropout."""
+    model = create_mcdo_model(model_type, dropout_p=dropout_p)
 
-    model = train(model=model, trainloader=trainloader)
-    model_save_path = Path.joinpath(mcdo_model_path, model_save_name)
-    torch.save(model.state_dict(), model_save_path)
-    print(f"Saved the model to {model_save_path}.")
+    if not save_name:
+        save_name = f"{model_type}_mcdo_ep{n_epochs}_{int(dropout_p * 100)}dp.pth"
+
+    trainloader, _ = load_train_data()
+    model = train(model=model, trainloader=trainloader, epochs=n_epochs)
+    torch.save(model.state_dict(), MCDO_MODEL_PATH / save_name)
+    print(f"Saved model to {MCDO_MODEL_PATH / save_name}")
 
 
-@app.command()
 def get_uncertainties_mcdo(model, n_iter, device, dataloader, dataset_name):
+    """Run MC Dropout inference and compute uncertainties"""
     softmax_scores = {}
     all_targets = []
 
@@ -98,73 +120,72 @@ def get_uncertainties_mcdo(model, n_iter, device, dataloader, dataset_name):
 
 
 @app.command()
-def quantify_mcdo_model_uncertainty(model_name: str = "model_mcdo_30dp.pth"):
+def quantify_mcdo_model_uncertainty(
+    model_type: ModelType = "resnet18",
+    model_name: str = "resnet18_mcdo_ep100_30dp.pth",
+    dropout_p: float = 0.3,
+):
+    """Quantify uncertainty and compute AUC for misclassification detection."""
     _, testloader = load_train_data()
     device = (
         "mps"
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    model = load_mcdo_model(model_name, device)
+    model = load_mcdo_model(model_type, model_name, device, dropout_p=dropout_p)
 
-    uncertainties, ensemble_predictions, all_targets = get_uncertainties_mcdo(
-        model, n_iter=10, device=device, dataloader=testloader, dataset_name="CIFAR10"
+    uncertainties, predictions, targets = get_uncertainties_mcdo(
+        model, n_iter=10, device=device, dataloader=testloader, dataset_name="CIFAR-10"
     )
 
-    incorrect_predictions = (ensemble_predictions != all_targets).astype(int)
-
     for i in range(10):
-        print(f"Sample {i}:")
-        print(f"Predicted class: {uncertainties['mean_pred'][i].argmax()}")
-        print(f"Aleatoric: {uncertainties['aleatoric'][i]:.4f}")
-        print(f"Epistemic: {uncertainties['epistemic'][i]:.4f}")
-        print(f"Total: {uncertainties['total'][i]:.4f}")
+        print(f"\nSample {i}:")
+        print(f"  Predicted: {predictions[i]}, True: {targets[i]}")
+        print(f"  Aleatoric: {uncertainties['aleatoric'][i]:.4f}")
+        print(f"  Epistemic: {uncertainties['epistemic'][i]:.4f}")
+        print(f"  Total: {uncertainties['total'][i]:.4f}")
 
-    total_uncertainty = uncertainties["total"]
-
-    auc_score = roc_auc_score(incorrect_predictions, total_uncertainty.cpu().numpy())
-
-    print(f"\nAUC Score (uncertainty vs misclassification): {auc_score:.4f}")
+    misclassified = (predictions != targets).astype(int)
+    auc = roc_auc_score(misclassified, uncertainties["total"].numpy())
+    print(f"\nAUC (uncertainty vs misclassification): {auc:.4f}")
 
 
 @app.command()
-def ood_detection_mcdo(model_name: str = "model_mcdo_30dp.pth"):
-    _, testloader_cifar10 = load_train_data()
-    testloader_cifar10c = load_cifar10c(corruption_type="gaussian_noise", severity=5)
+def ood_detection_mcdo(
+    model_type: ModelType = "resnet18",
+    model_name: str = "resnet_mcdo_ep100_30dp.pth",
+    dropout_p: float = 0.3,
+    corruption_type: str = "gaussian_noise",
+    corruption_severity: int = 2,
+):
+    """Perform OOD detection using CIFAR-10 vs CIFAR-10-C"""
+    _, testloader_c10 = load_train_data()
+    testloader_c10c = load_cifar10c(
+        corruption_type=corruption_type, severity=corruption_severity
+    )
     device = (
         "mps"
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    model = load_mcdo_model(model_name, device)
+    model = load_mcdo_model(model_type, model_name, device, dropout_p=dropout_p)
 
-    uncertainties_c10, ensemble_predictions_c10, all_targets_c10 = (
-        get_uncertainties_mcdo(
-            model,
-            n_iter=10,
-            device=device,
-            dataloader=testloader_cifar10,
-            dataset_name="CIFAR10",
-        )
+    unc_c10, pred_c10, target_c10 = get_uncertainties_mcdo(
+        model,
+        n_iter=10,
+        device=device,
+        dataloader=testloader_c10,
+        dataset_name="CIFAR-10",
+    )
+    unc_c10c, pred_c10c, target_c10c = get_uncertainties_mcdo(
+        model,
+        n_iter=10,
+        device=device,
+        dataloader=testloader_c10c,
+        dataset_name="CIFAR-10-C",
     )
 
-    uncertainties_c10c, ensemble_predictions_c10c, all_targets_c10c = (
-        get_uncertainties_mcdo(
-            model,
-            n_iter=10,
-            device=device,
-            dataloader=testloader_cifar10c,
-            dataset_name="CIFAR10c",
-        )
-    )
-    ood_detection(
-        uncertainties_c10,
-        uncertainties_c10c,
-        ensemble_predictions_c10,
-        ensemble_predictions_c10c,
-        all_targets_c10,
-        all_targets_c10c,
-    )
+    ood_detection(unc_c10, unc_c10c, pred_c10, pred_c10c, target_c10, target_c10c)
 
 
 if __name__ == "__main__":
