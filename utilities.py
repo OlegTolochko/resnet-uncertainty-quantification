@@ -3,16 +3,17 @@ from typing import Literal, Dict, Callable
 import torch
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from torchvision.models import resnet18, resnet50, resnet34
+from torchvision.models import resnet18, resnet50, resnet34, wide_resnet50_2
 
 
 BASE_MODEL_MAP: Dict[str, Callable] = {
     "resnet18": resnet18,
     "resnet34": resnet34,
     "resnet50": resnet50,
+    "wide_resnet50": wide_resnet50_2
     # More model architectures may be added here
 }
-ModelType = Literal["resnet18", "resnet34", "resnet50"]
+ModelType = Literal["resnet18", "resnet34", "resnet50", "wide_resnet50"]
 
 
 def compute_uncertainties(scores):
