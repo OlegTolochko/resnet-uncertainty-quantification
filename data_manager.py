@@ -42,18 +42,27 @@ def load_cifar10c(corruption_type="jpeg_compression", severity=1, batch_size=128
 
 
 def load_train_data(
-    dataset: torch.utils.data.Dataset = CIFAR10, batch_size: int = 128
+    dataset: torch.utils.data.Dataset = CIFAR10, 
+    batch_size: int = 128, 
+    enable_data_augmentation: bool = False
 ) -> List[torch.utils.data.DataLoader]:
     """
     Args:
         dataset (Dataset): The dataset to load, Options: e.g. CIFAR10, CIFAR100
     """
-    transform_train = transforms.Compose(
-        [
+    if enable_data_augmentation:
+        transform_train = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ]
-    )
+        ])
+    else:
+        transform_train = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+    
 
     transform_test = transforms.Compose(
         [
